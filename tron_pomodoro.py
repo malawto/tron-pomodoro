@@ -5,6 +5,7 @@ A system tray pomodoro timer using the animated Tron bit as the icon.
 Includes a floating window for better visibility.
 """
 
+import subprocess
 import threading
 import time
 import tempfile
@@ -207,10 +208,45 @@ class PomodoroTimer:
         self.start_yes_played = False  # Track if start yes animation has played
         self.temp_icon_path = None
         
+        # Sound setup
+        self.sounds_dir = Path(__file__).parent / "sounds"
+        self._ensure_sounds()
+
         # Create menu items
         self.pause_menu_item = None
         self.stop_menu_item = None
-        
+
+    def _ensure_sounds(self):
+        """Generate sound files into the sounds/ directory if not already present."""
+        expected = [
+            self.sounds_dir / "bit_yes.wav",
+            self.sounds_dir / "bit_no.wav",
+            self.sounds_dir / "bit_start.wav",
+        ]
+        if all(p.exists() for p in expected):
+            return
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent))
+            from generate_sounds import generate_bit_yes, generate_bit_no, generate_bit_work_start
+            self.sounds_dir.mkdir(exist_ok=True)
+            generate_bit_yes(str(self.sounds_dir / "bit_yes.wav"))
+            generate_bit_no(str(self.sounds_dir / "bit_no.wav"))
+            generate_bit_work_start(str(self.sounds_dir / "bit_start.wav"))
+            print("Sounds generated.")
+        except Exception as e:
+            print(f"Sound generation failed: {e}")
+
+    def _play_sound(self, filename):
+        """Play a WAV file non-blocking via aplay."""
+        path = self.sounds_dir / filename
+        if path.exists():
+            subprocess.Popen(
+                ["aplay", "-q", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     def _load_gif_frames(self, size=32):
         """Load all frames from the animated GIF."""
         frames = []
@@ -301,6 +337,7 @@ class PomodoroTimer:
                 if self.remaining_seconds == 60:
                     self.animation_mode = "no"
                     self.current_frame = 0  # Reset frame counter
+                    self._play_sound("bit_no.wav")
                 
                 time.sleep(1)
                 self.remaining_seconds -= 1
@@ -315,6 +352,7 @@ class PomodoroTimer:
         self.animation_mode = "yes"  # Show "yes" animation when complete
         self.start_yes_played = True  # Set to true so it keeps looping (not one-time)
         self.current_frame = 0  # Reset frame counter
+        self._play_sound("bit_yes.wav")
         message = f"{self.session_type} complete!"
         
         # Update display
@@ -444,6 +482,7 @@ class PomodoroTimer:
         self.current_frame = 0  # Reset frame counter
         self._update_display()
         
+        self._play_sound("bit_start.wav")
         self.timer_thread = threading.Thread(target=self._timer_countdown, daemon=True)
         self.timer_thread.start()
     
