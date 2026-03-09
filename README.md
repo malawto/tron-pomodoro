@@ -31,7 +31,9 @@ git clone <repo-url> ~/src/tron-pomodoro
 cd ~/src/tron-pomodoro
 
 # Create and activate a virtualenv
-python3 -m venv venv
+# --system-site-packages is required so the venv can access python3-gi (PyGObject),
+# which is only available as a system apt package and cannot be pip-installed.
+python3 -m venv --system-site-packages venv
 source venv/bin/activate
 
 # Install Python dependencies
