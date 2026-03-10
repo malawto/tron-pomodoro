@@ -12,7 +12,7 @@ Tron Bit Pomodoro Timer — a Linux/GNOME desktop app with an animated system tr
 # --system-site-packages is required: python3-gi (PyGObject) is only available as a system apt package
 python3 -m venv --system-site-packages venv
 source venv/bin/activate
-pip install Pillow pystray numpy
+pip install Pillow pystray numpy pygame
 ```
 
 System packages required: `sudo apt install python3 python3-venv python3-gi gir1.2-appindicator3-0.1`
@@ -46,4 +46,4 @@ Animation state machine: idle → "normal" looping rotation; last 60 seconds →
 - `bit_no.wav` — played at the 60-second warning (last minute)
 - `bit_yes.wav` — played on session completion
 
-`PomodoroTimer._ensure_sounds()` auto-generates them at startup if missing. `_play_sound()` plays them non-blocking via `aplay`. Requires numpy (`pip install numpy`) and system `aplay` (part of `alsa-utils`).
+`PomodoroTimer._ensure_sounds()` auto-generates them at startup if missing. `_play_sound()` plays them non-blocking via `pygame.mixer` (maintains a persistent PulseAudio/PipeWire connection, avoiding the silent-failure issue with subprocess+aplay when the PipeWire sink is suspended).
