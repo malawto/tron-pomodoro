@@ -5,7 +5,9 @@ A system tray pomodoro timer using the animated Tron bit as the icon.
 Includes a floating window for better visibility.
 """
 
-import subprocess
+import json
+import os
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import threading
 import time
 import tempfile
@@ -101,11 +103,19 @@ class FloatingWindow(Gtk.Window):
         
         button_box.pack_start(control_box, False, False, 0)
         vbox.pack_start(button_box, False, False, 0)
-        
-        # Close button
-        btn_close = Gtk.Button(label="Hide Window")
+
+        # Mute / Hide row
+        bottom_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+
+        self.btn_mute = Gtk.Button(label="Mute")
+        self.btn_mute.connect("clicked", lambda w: timer.toggle_mute())
+        bottom_box.pack_start(self.btn_mute, True, True, 0)
+
+        btn_close = Gtk.Button(label="Hide")
         btn_close.connect("clicked", lambda w: self.hide())
-        vbox.pack_start(btn_close, False, False, 0)
+        bottom_box.pack_start(btn_close, True, True, 0)
+
+        vbox.pack_start(bottom_box, False, False, 0)
         
         # Style
         css = b"""
@@ -178,6 +188,9 @@ class FloatingWindow(Gtk.Window):
         else:
             self.btn_pause.set_label("Pause")
 
+    def update_mute_button(self, muted):
+        self.btn_mute.set_label("Unmute" if muted else "Mute")
+
 
 class PomodoroTimer:
     def __init__(self, icon_path):
@@ -211,10 +224,17 @@ class PomodoroTimer:
         # Sound setup
         self.sounds_dir = Path(__file__).parent / "sounds"
         self._ensure_sounds()
+        import pygame
+        pygame.mixer.init()
+
+        # Config / mute state
+        self.config_path = Path.home() / ".config" / "tron-pomodoro" / "settings.json"
+        self.muted = self._load_config().get("muted", False)
 
         # Create menu items
         self.pause_menu_item = None
         self.stop_menu_item = None
+        self.mute_menu_item = None
 
     def _ensure_sounds(self):
         """Generate sound files into the sounds/ directory if not already present."""
@@ -237,15 +257,36 @@ class PomodoroTimer:
         except Exception as e:
             print(f"Sound generation failed: {e}")
 
+    def _load_config(self):
+        try:
+            return json.loads(self.config_path.read_text())
+        except Exception:
+            return {}
+
+    def _save_config(self):
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config_path.write_text(json.dumps({"muted": self.muted}))
+
+    def toggle_mute(self, widget=None):
+        self.muted = not self.muted
+        self._save_config()
+        if self.floating_window:
+            self.floating_window.update_mute_button(self.muted)
+        if self.mute_menu_item:
+            self.mute_menu_item.set_label("Unmute" if self.muted else "Mute")
+
     def _play_sound(self, filename):
-        """Play a WAV file non-blocking via aplay."""
+        """Play a WAV file non-blocking via pygame mixer."""
+        if self.muted:
+            return
         path = self.sounds_dir / filename
-        if path.exists():
-            subprocess.Popen(
-                ["aplay", "-q", str(path)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        if not path.exists():
+            return
+        import pygame
+        threading.Thread(
+            target=lambda: pygame.mixer.Sound(str(path)).play(),
+            daemon=True,
+        ).start()
 
     def _load_gif_frames(self, size=32):
         """Load all frames from the animated GIF."""
@@ -554,9 +595,14 @@ class PomodoroTimer:
         self.stop_menu_item.set_sensitive(False)
         menu.append(self.stop_menu_item)
         
+        # Mute
+        self.mute_menu_item = Gtk.MenuItem(label="Unmute" if self.muted else "Mute")
+        self.mute_menu_item.connect('activate', self.toggle_mute)
+        menu.append(self.mute_menu_item)
+
         # Separator
         menu.append(Gtk.SeparatorMenuItem())
-        
+
         # Quit
         item_quit = Gtk.MenuItem(label="Quit")
         item_quit.connect('activate', self.quit_app)
@@ -587,7 +633,8 @@ class PomodoroTimer:
             
             # Create floating window
             self.floating_window = FloatingWindow(self)
-            
+            self.floating_window.update_mute_button(self.muted)
+
             # Set menu
             self.indicator.set_menu(self.build_menu())
             
@@ -603,7 +650,7 @@ class PomodoroTimer:
 
 def main():
     # Path to the Tron bit GIF - UPDATE THIS PATH
-    icon_path = Path.home() / "Documents" / "Tron-Pomodoro" / "bit.gif"
+    icon_path = Path(__file__).parent / "bit.gif"
     
     if not icon_path.exists():
         print(f"Error: GIF file not found at {icon_path}")

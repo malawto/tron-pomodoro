@@ -84,6 +84,7 @@ def generate_bit_yes(path):
         parts.append(make_note(freq, dur))
         parts.append(make_silence(gap))
 
+    parts.append(make_silence(0.15))
     signal = np.concatenate(parts)
     write_wav(path, signal)
 
@@ -107,6 +108,7 @@ def generate_bit_no(path):
         parts.append(make_note(freq, dur))
         parts.append(make_silence(gap))
 
+    parts.append(make_silence(0.15))
     signal = np.concatenate(parts)
     write_wav(path, signal)
 
@@ -126,6 +128,7 @@ def generate_bit_work_start(path):
         parts.append(make_note(freq, dur))
         parts.append(make_silence(gap))
 
+    parts.append(make_silence(0.15))
     signal = np.concatenate(parts)
     write_wav(path, signal)
 
