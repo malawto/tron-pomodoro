@@ -116,6 +116,17 @@ class FloatingWindow(Gtk.Window):
         bottom_box.pack_start(btn_close, True, True, 0)
 
         vbox.pack_start(bottom_box, False, False, 0)
+
+        # Volume slider row
+        vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        vol_label = Gtk.Label(label="Vol:")
+        vol_box.pack_start(vol_label, False, False, 0)
+        self.vol_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
+        self.vol_slider.set_value(timer.volume)
+        self.vol_slider.set_draw_value(False)
+        self.vol_slider.connect("value-changed", lambda s: timer.set_volume(s.get_value()))
+        vol_box.pack_start(self.vol_slider, True, True, 0)
+        vbox.pack_start(vol_box, False, False, 0)
         
         # Style
         css = b"""
@@ -136,6 +147,22 @@ class FloatingWindow(Gtk.Window):
         }
         button:hover {
             background: #003366;
+        }
+        scale trough {
+            background: #001a33;
+            border: 1px solid #00BFFF;
+            border-radius: 3px;
+            min-height: 4px;
+        }
+        scale highlight {
+            background: #00BFFF;
+            border-radius: 3px;
+        }
+        scale slider {
+            background: #00BFFF;
+            border-radius: 50%;
+            min-width: 12px;
+            min-height: 12px;
         }
         """
         css_provider = Gtk.CssProvider()
@@ -229,7 +256,9 @@ class PomodoroTimer:
 
         # Config / mute state
         self.config_path = Path.home() / ".config" / "tron-pomodoro" / "settings.json"
-        self.muted = self._load_config().get("muted", False)
+        _cfg = self._load_config()
+        self.muted = _cfg.get("muted", False)
+        self.volume = _cfg.get("volume", 0.5)
 
         # Create menu items
         self.pause_menu_item = None
@@ -265,7 +294,11 @@ class PomodoroTimer:
 
     def _save_config(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(json.dumps({"muted": self.muted}))
+        self.config_path.write_text(json.dumps({"muted": self.muted, "volume": self.volume}))
+
+    def set_volume(self, value):
+        self.volume = value
+        self._save_config()
 
     def toggle_mute(self, widget=None):
         self.muted = not self.muted
@@ -283,10 +316,12 @@ class PomodoroTimer:
         if not path.exists():
             return
         import pygame
-        threading.Thread(
-            target=lambda: pygame.mixer.Sound(str(path)).play(),
-            daemon=True,
-        ).start()
+        volume = self.volume
+        def _play():
+            sound = pygame.mixer.Sound(str(path))
+            sound.set_volume(volume)
+            sound.play()
+        threading.Thread(target=_play, daemon=True).start()
 
     def _load_gif_frames(self, size=32):
         """Load all frames from the animated GIF."""
