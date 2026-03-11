@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tron-pomodoro"
+version = "1.0.0"
+description = "Tron Bit Pomodoro Timer — animated system tray Pomodoro timer for Linux/GNOME"
+requires-python = ">=3.9"
+# python3-gi (PyGObject) is a system package — install via apt before using pipx.
+# See README for prerequisites.
+dependencies = [
+    "Pillow>=9.0",
+    "numpy>=1.20",
+    "pygame>=2.0",
+    "pystray>=0.19",
+]
+
+[project.scripts]
+tron-pomodoro = "tron_pomodoro:main"
+
+[tool.hatch.build.targets.wheel]
+# Include the GIF asset and sound generator alongside the main module.
+# Path(__file__).parent is used at runtime to locate these files.
+include = [
+    "/tron_pomodoro.py",
+    "/generate_sounds.py",
+    "/bit.gif",
+]
