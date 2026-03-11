@@ -240,9 +240,9 @@ class PomodoroTimer:
         self.YES_FRAMES = list(range(9, 20))  # "Yes" animation
         self.NO_FRAMES = list(range(33, 43))  # "No" animation
         
-        # Load GIF frames
+        # Load GIF frames (small size for tray icon only; large frames lazy-loaded on demand)
         self.frames = self._load_gif_frames()
-        self.large_frames = self._load_gif_frames(size=128)  # Larger for window
+        self.large_frame_data = None  # Lazy-loaded as raw RGBA bytes when window is first shown
         self.current_frame = 0
         self.animation_mode = "normal"  # "normal", "yes", or "no"
         self.start_yes_played = False  # Track if start yes animation has played
@@ -253,6 +253,18 @@ class PomodoroTimer:
         self._ensure_sounds()
         import pygame
         pygame.mixer.init()
+        self._sound_cache = self._preload_sounds()
+
+        # Notification support (initialized once)
+        self._notify_module = None
+        try:
+            import gi as _gi
+            _gi.require_version('Notify', '0.7')
+            from gi.repository import Notify as _Notify
+            _Notify.init("Tron Pomodoro")
+            self._notify_module = _Notify
+        except Exception:
+            pass
 
         # Config / mute state
         self.config_path = Path.home() / ".config" / "tron-pomodoro" / "settings.json"
@@ -308,91 +320,102 @@ class PomodoroTimer:
         if self.mute_menu_item:
             self.mute_menu_item.set_label("Unmute" if self.muted else "Mute")
 
+    def _preload_sounds(self):
+        """Load all WAV files into pygame at startup to avoid per-play disk reads."""
+        import pygame
+        cache = {}
+        for name in ("bit_yes.wav", "bit_no.wav", "bit_start.wav"):
+            path = self.sounds_dir / name
+            if path.exists():
+                cache[name] = pygame.mixer.Sound(str(path))
+        return cache
+
     def _play_sound(self, filename):
-        """Play a WAV file non-blocking via pygame mixer."""
+        """Play a cached sound non-blocking (pygame.Sound.play is already async)."""
         if self.muted:
             return
-        path = self.sounds_dir / filename
-        if not path.exists():
+        sound = self._sound_cache.get(filename)
+        if sound is None:
             return
-        import pygame
-        volume = self.volume
-        def _play():
-            sound = pygame.mixer.Sound(str(path))
-            sound.set_volume(volume)
-            sound.play()
-        threading.Thread(target=_play, daemon=True).start()
+        sound.set_volume(self.volume)
+        sound.play()
 
     def _load_gif_frames(self, size=32):
-        """Load all frames from the animated GIF."""
+        """Load all frames from the animated GIF as PIL Images."""
         frames = []
         img = Image.open(self.icon_path)
-        
         try:
             while True:
-                # Convert to RGBA and resize for system tray
                 frame = img.copy().convert('RGBA')
                 frame.thumbnail((size, size), Image.Resampling.LANCZOS)
                 frames.append(frame)
                 img.seek(img.tell() + 1)
         except EOFError:
             pass
-        
         return frames
+
+    def _ensure_large_frames(self):
+        """Lazy-load large (128px) frames as raw RGBA bytes on first use."""
+        if self.large_frame_data is not None:
+            return
+        self.large_frame_data = []
+        img = Image.open(self.icon_path)
+        try:
+            while True:
+                frame = img.copy().convert('RGBA')
+                frame.thumbnail((128, 128), Image.Resampling.LANCZOS)
+                w, h = frame.size
+                self.large_frame_data.append((frame.tobytes(), w, h))
+                img.seek(img.tell() + 1)
+        except EOFError:
+            pass
     
-    def _get_next_frame(self, large=False):
-        """Get the next frame in the animation based on current mode."""
-        frames = self.large_frames if large else self.frames
-        
-        # Determine which frame range to use based on animation mode
+    def _advance_frame(self):
+        """Advance animation state by one tick and return the GIF frame index to display."""
         if self.animation_mode == "yes":
             frame_range = self.YES_FRAMES
         elif self.animation_mode == "no":
             frame_range = self.NO_FRAMES
-        else:  # normal
+        else:
             frame_range = self.NORMAL_FRAMES
-        
-        # Get current position in the frame range
+
         frame_index = self.current_frame % len(frame_range)
         actual_frame = frame_range[frame_index]
-        
-        # Advance to next frame
+
         self.current_frame += 1
-        
-        # If we just completed one full loop of yes animation at start, switch to normal
+
+        # One-shot yes animation at session start: switch to normal after one loop
         if self.animation_mode == "yes" and not self.start_yes_played and self.current_frame >= len(frame_range):
             self.start_yes_played = True
             self.animation_mode = "normal"
             self.current_frame = 0
-        
-        # Keep current_frame within range
-        if self.current_frame >= len(frame_range):
+        elif self.current_frame >= len(frame_range):
             self.current_frame = 0
-        
-        return frames[actual_frame]
-    
+
+        return actual_frame
+
     def _update_icon(self):
-        """Update the system tray icon with the next frame."""
-        if USE_APPINDICATOR and self.indicator:
-            # Save current frame to temp file with frame number to avoid caching
-            frame = self._get_next_frame()
-            if self.temp_icon_path:
-                # Use frame number in filename to force refresh
-                icon_path = self.temp_icon_path.parent / f"tron_bit_icon_{self.current_frame}.png"
-                frame.save(icon_path, 'PNG')
-                # Use set_property to avoid deprecation warning
-                icon_name = f"tron_bit_icon_{self.current_frame}"
-                self.indicator.set_property("icon-theme-path", str(self.temp_icon_path.parent))
-                self.indicator.set_property("icon-name", icon_name)
-        
-        # Update floating window if visible
+        """Update the system tray icon and floating window with the next frame."""
+        actual_frame = self._advance_frame()
+
+        if USE_APPINDICATOR and self.indicator and self.temp_icon_path:
+            frame = self.frames[actual_frame]
+            icon_path = self.temp_icon_path.parent / f"tron_bit_icon_{self.current_frame}.png"
+            frame.save(icon_path, 'PNG')
+            icon_name = f"tron_bit_icon_{self.current_frame}"
+            self.indicator.set_property("icon-theme-path", str(self.temp_icon_path.parent))
+            self.indicator.set_property("icon-name", icon_name)
+
+        # Update floating window if visible — build Pixbuf directly from raw bytes (no disk I/O)
         if self.floating_window and self.floating_window.get_visible():
-            large_frame = self._get_next_frame(large=True)
-            # Convert PIL to Pixbuf for GTK
-            large_frame.save("/tmp/tron_bit_large.png", 'PNG')
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file("/tmp/tron_bit_large.png")
+            self._ensure_large_frames()
+            raw, w, h = self.large_frame_data[actual_frame]
+            gbytes = GLib.Bytes.new(raw)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(
+                gbytes, GdkPixbuf.Colorspace.RGB, True, 8, w, h, w * 4
+            )
             self.floating_window.bit_image.set_from_pixbuf(pixbuf)
-        
+
         return True  # Continue the GLib timeout
     
     def _animate_icon(self):
@@ -446,12 +469,10 @@ class PomodoroTimer:
     
     def _show_notification(self, title, message):
         """Show a desktop notification."""
+        if self._notify_module is None:
+            return
         try:
-            import gi
-            gi.require_version('Notify', '0.7')
-            from gi.repository import Notify
-            Notify.init("Tron Pomodoro")
-            notification = Notify.Notification.new(title, message, None)
+            notification = self._notify_module.Notification.new(title, message, None)
             notification.show()
         except Exception as e:
             print(f"Notification error: {e}")
@@ -654,8 +675,7 @@ class PomodoroTimer:
             self.temp_icon_path = Path(temp_dir) / "tron_bit_icon.png"
             
             # Save first frame
-            frame = self._get_next_frame()
-            frame.save(self.temp_icon_path, 'PNG')
+            self.frames[self.NORMAL_FRAMES[0]].save(self.temp_icon_path, 'PNG')
             
             # Create AppIndicator
             self.indicator = AppIndicator3.Indicator.new(
