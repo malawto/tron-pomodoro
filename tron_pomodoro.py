@@ -418,10 +418,6 @@ class PomodoroTimer:
 
         return True  # Continue the GLib timeout
     
-    def _animate_icon(self):
-        """Continuously animate the icon using GLib timeout."""
-        GLib.timeout_add(100, self._update_icon)  # Update every 100ms
-    
     def _format_time(self, seconds):
         """Format seconds as MM:SS."""
         mins = seconds // 60
@@ -536,8 +532,8 @@ class PomodoroTimer:
             modal=True
         )
         dialog.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK
+            "Cancel", Gtk.ResponseType.CANCEL,
+            "OK", Gtk.ResponseType.OK
         )
         
         content = dialog.get_content_area()
@@ -694,7 +690,7 @@ class PomodoroTimer:
             self.indicator.set_menu(self.build_menu())
             
             # Start animation
-            self._animate_icon()
+            GLib.timeout_add(100, self._update_icon)
             
             # Run GTK main loop
             Gtk.main()
@@ -704,12 +700,10 @@ class PomodoroTimer:
 
 
 def main():
-    # Path to the Tron bit GIF - UPDATE THIS PATH
     icon_path = Path(__file__).parent / "bit.gif"
-    
+
     if not icon_path.exists():
-        print(f"Error: GIF file not found at {icon_path}")
-        print("Please update the icon_path in the script to point to your Tron bit GIF.")
+        print(f"Error: bit.gif not found at {icon_path}")
         return
     
     timer = PomodoroTimer(icon_path)
