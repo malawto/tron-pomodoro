@@ -87,6 +87,12 @@ class FloatingWindow(Gtk.Window):
         self.counter_label.set_text("")
         vbox.pack_start(self.counter_label, False, False, 0)
 
+        # "Start next session" button — shown after completion, hidden otherwise
+        self.btn_next = Gtk.Button()
+        self.btn_next.connect("clicked", lambda w: timer.start_next_session())
+        self.btn_next.set_no_show_all(True)  # exclude from show_all()
+        vbox.pack_start(self.btn_next, False, False, 0)
+
         # Buttons
         button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
 
@@ -241,6 +247,14 @@ class FloatingWindow(Gtk.Window):
     def update_mute_button(self, muted):
         self.btn_mute.set_label("Unmute" if muted else "Mute")
 
+    def update_next_button(self, label=None):
+        """Show the 'start next' button with the given label, or hide it."""
+        if label:
+            self.btn_next.set_label(label)
+            self.btn_next.show()
+        else:
+            self.btn_next.hide()
+
     def update_button_labels(self, work_min, short_min, long_min):
         self.btn_work.set_label(f"Work ({work_min} min)")
         self.btn_short.set_label(f"Short Break ({short_min} min)")
@@ -290,6 +304,7 @@ class PomodoroTimer:
         self.remaining_seconds = 0
         self.session_type = None
         self._current_task = None
+        self._last_session_was_break = False  # drives "start next" label
         self._blink_state = False   # toggled every 500 ms for in-progress dot
         self._blink_tick = 0
 
@@ -344,6 +359,7 @@ class PomodoroTimer:
         self.pause_menu_item = None
         self.stop_menu_item = None
         self.mute_menu_item = None
+        self.task_menu_item = None   # non-interactive current-task display
 
     def _ensure_sounds(self):
         """Generate sound files into the sounds/ directory if not already present."""
@@ -556,6 +572,7 @@ class PomodoroTimer:
 
         # Track work-type session completion
         cycle_complete = False
+        self._last_session_was_break = not self._is_countable_session()
         if self._is_countable_session():
             if self.session_counter_enabled:
                 self.sessions_completed += 1
@@ -565,6 +582,14 @@ class PomodoroTimer:
                     cycle_complete = True
             if self.session_type == "Work" and self.task_logging_enabled:
                 self._log_task_entry(self._current_task, self.WORK_DURATION // 60, True)
+
+        # Show "start next" button
+        if self.floating_window:
+            if self._last_session_was_break:
+                next_label = f"Start Work ({self.work_duration_min} min) →"
+            else:
+                next_label = f"Start Short Break ({self.short_break_min} min) →"
+            self.floating_window.update_next_button(next_label)
 
         # Update display
         self._update_display()
@@ -619,6 +644,17 @@ class PomodoroTimer:
                 self.running
             )
             self.floating_window.update_task(self._current_task)
+            # Hide "start next" while a session is running
+            if self.running:
+                self.floating_window.update_next_button(None)
+
+        # Sync task name in tray menu
+        if self.task_menu_item:
+            if self._current_task and self.running:
+                self.task_menu_item.set_label(f"  ↳ {self._current_task}")
+                self.task_menu_item.show()
+            else:
+                self.task_menu_item.hide()
 
     def _is_countable_session(self):
         """True for work-type sessions (Work, Custom) — not breaks."""
@@ -927,6 +963,13 @@ class PomodoroTimer:
 
     # ── Timer control ────────────────────────────────────────────────────────
 
+    def start_next_session(self, widget=None):
+        """Start the logical next session after the last one completed."""
+        if self._last_session_was_break:
+            self.start_work()
+        else:
+            self.start_short_break()
+
     def show_window(self, widget=None):
         """Show the floating window."""
         if self.floating_window:
@@ -1035,6 +1078,8 @@ class PomodoroTimer:
         self.animation_mode = "normal"  # Reset to normal when stopped
         self.current_frame = 0  # Reset frame counter
         self._current_task = None
+        if self.floating_window:
+            self.floating_window.update_next_button(None)
         self._update_display()
         self._update_counter_display()
         if self.timer_thread:
@@ -1053,6 +1098,12 @@ class PomodoroTimer:
         item_show = Gtk.MenuItem(label="Show Timer Window")
         item_show.connect('activate', self.show_window)
         menu.append(item_show)
+
+        # Current task (non-interactive, only visible when a task is set)
+        self.task_menu_item = Gtk.MenuItem(label="")
+        self.task_menu_item.set_sensitive(False)
+        self.task_menu_item.set_no_show_all(True)
+        menu.append(self.task_menu_item)
 
         menu.append(Gtk.SeparatorMenuItem())
 
