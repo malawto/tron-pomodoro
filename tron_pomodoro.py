@@ -8,9 +8,11 @@ Includes a floating window for better visibility.
 import json
 import os
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+import subprocess
 import threading
 import time
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from PIL import Image
 
@@ -28,17 +30,17 @@ except (ImportError, ValueError):
 
 class FloatingWindow(Gtk.Window):
     """Floating timer window with larger animated bit."""
-    
+
     def __init__(self, timer):
         super().__init__(title="Tron Pomodoro")
         self.timer = timer
-        
+
         # Window setup
         self.set_decorated(False)  # No title bar
         self.set_keep_above(True)  # Always on top
         self.set_resizable(False)
         self.set_default_size(200, 280)
-        
+
         # Make window draggable
         self.connect("button-press-event", self.on_button_press)
         self.connect("button-release-event", self.on_button_release)
@@ -46,7 +48,7 @@ class FloatingWindow(Gtk.Window):
         self.dragging = False
         self.drag_offset_x = 0
         self.drag_offset_y = 0
-        
+
         # Main container
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         vbox.set_margin_top(10)
@@ -54,53 +56,65 @@ class FloatingWindow(Gtk.Window):
         vbox.set_margin_start(10)
         vbox.set_margin_end(10)
         self.add(vbox)
-        
+
         # Animated bit display
         self.bit_image = Gtk.Image()
         vbox.pack_start(self.bit_image, False, False, 0)
-        
+
         # Timer label
         self.timer_label = Gtk.Label()
         self.timer_label.set_markup("<span font='24' weight='bold'>Ready</span>")
         vbox.pack_start(self.timer_label, False, False, 0)
-        
+
         # Session type label
         self.session_label = Gtk.Label()
         self.session_label.set_text("")
         vbox.pack_start(self.session_label, False, False, 0)
-        
+
+        # Current task label
+        self.task_label = Gtk.Label()
+        self.task_label.set_text("")
+        self.task_label.set_line_wrap(True)
+        self.task_label.set_max_width_chars(22)
+        vbox.pack_start(self.task_label, False, False, 0)
+
+        # Session counter label
+        self.counter_label = Gtk.Label()
+        self.counter_label.set_text("")
+        vbox.pack_start(self.counter_label, False, False, 0)
+
         # Buttons
         button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        
+
         btn_work = Gtk.Button(label="Work (25 min)")
         btn_work.connect("clicked", lambda w: timer.start_work())
         button_box.pack_start(btn_work, False, False, 0)
-        
+
         btn_short = Gtk.Button(label="Short Break (5 min)")
         btn_short.connect("clicked", lambda w: timer.start_short_break())
         button_box.pack_start(btn_short, False, False, 0)
-        
+
         btn_long = Gtk.Button(label="Long Break (15 min)")
         btn_long.connect("clicked", lambda w: timer.start_long_break())
         button_box.pack_start(btn_long, False, False, 0)
-        
+
         btn_custom = Gtk.Button(label="Custom Timer...")
         btn_custom.connect("clicked", lambda w: timer.start_custom_timer())
         button_box.pack_start(btn_custom, False, False, 0)
-        
+
         # Pause/Stop buttons
         control_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        
+
         self.btn_pause = Gtk.Button(label="Pause")
         self.btn_pause.connect("clicked", lambda w: timer.toggle_pause())
         self.btn_pause.set_sensitive(False)
         control_box.pack_start(self.btn_pause, True, True, 0)
-        
+
         self.btn_stop = Gtk.Button(label="Stop")
         self.btn_stop.connect("clicked", lambda w: timer.stop_timer())
         self.btn_stop.set_sensitive(False)
         control_box.pack_start(self.btn_stop, True, True, 0)
-        
+
         button_box.pack_start(control_box, False, False, 0)
         vbox.pack_start(button_box, False, False, 0)
 
@@ -127,7 +141,12 @@ class FloatingWindow(Gtk.Window):
         self.vol_slider.connect("value-changed", lambda s: timer.set_volume(s.get_value()))
         vol_box.pack_start(self.vol_slider, True, True, 0)
         vbox.pack_start(vol_box, False, False, 0)
-        
+
+        # Settings button
+        btn_settings = Gtk.Button(label="Settings...")
+        btn_settings.connect("clicked", lambda w: timer.show_settings_dialog())
+        vbox.pack_start(btn_settings, False, False, 0)
+
         # Style
         css = b"""
         window {
@@ -172,31 +191,31 @@ class FloatingWindow(Gtk.Window):
             css_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-        
+
         # Show all widgets
         self.show_all()
         # But hide the window initially
         self.hide()
-    
+
     def on_button_press(self, widget, event):
         """Start dragging."""
         if event.button == 1:
             self.dragging = True
             self.drag_offset_x = event.x_root - self.get_position()[0]
             self.drag_offset_y = event.y_root - self.get_position()[1]
-    
+
     def on_button_release(self, widget, event):
         """Stop dragging."""
         if event.button == 1:
             self.dragging = False
-    
+
     def on_motion(self, widget, event):
         """Handle dragging."""
         if self.dragging:
             new_x = event.x_root - self.drag_offset_x
             new_y = event.y_root - self.drag_offset_y
             self.move(int(new_x), int(new_y))
-    
+
     def update_display(self, time_str, session_type, is_paused, is_running):
         """Update the timer display."""
         if is_running:
@@ -206,7 +225,7 @@ class FloatingWindow(Gtk.Window):
         else:
             self.timer_label.set_markup("<span font='24' weight='bold'>Ready</span>")
             self.session_label.set_text("")
-        
+
         # Update button sensitivity
         self.btn_pause.set_sensitive(is_running)
         self.btn_stop.set_sensitive(is_running)
@@ -217,6 +236,38 @@ class FloatingWindow(Gtk.Window):
 
     def update_mute_button(self, muted):
         self.btn_mute.set_label("Unmute" if muted else "Mute")
+
+    def update_task(self, task):
+        """Show or hide the current task description."""
+        if task:
+            self.task_label.set_markup(f"<span font='10' style='italic'>{task}</span>")
+        else:
+            self.task_label.set_text("")
+
+    def update_counter(self, sessions_completed, sessions_per_cycle, enabled,
+                       running=False, blink_on=False):
+        """Update the session counter display.
+
+        While a session is running the next dot (in-progress position) blinks.
+        blink_on controls whether it's currently showing as filled or empty.
+        """
+        if not enabled:
+            self.counter_label.set_text("")
+            return
+        pos = sessions_completed % sessions_per_cycle
+        dots = []
+        for i in range(sessions_per_cycle):
+            if i < pos:
+                dots.append("●")
+            elif i == pos and running:
+                dots.append("●" if blink_on else "○")
+            else:
+                dots.append("○")
+        dot_str = " ".join(dots)
+        total_text = f"{sessions_completed} session{'s' if sessions_completed != 1 else ''}"
+        self.counter_label.set_markup(
+            f"<span font='10'>{dot_str}\n{total_text}</span>"
+        )
 
 
 class PomodoroTimer:
@@ -229,17 +280,20 @@ class PomodoroTimer:
         self.paused = False
         self.remaining_seconds = 0
         self.session_type = None
-        
+        self._current_task = None
+        self._blink_state = False   # toggled every 500 ms for in-progress dot
+        self._blink_tick = 0
+
         # Timer durations in seconds
         self.WORK_DURATION = 25 * 60
         self.SHORT_BREAK = 5 * 60
         self.LONG_BREAK = 15 * 60
-        
+
         # Animation frame ranges
         self.NORMAL_FRAMES = list(range(0, 9)) + list(range(20, 33))  # Idle rotation
         self.YES_FRAMES = list(range(9, 20))  # "Yes" animation
         self.NO_FRAMES = list(range(33, 43))  # "No" animation
-        
+
         # Load GIF frames (small size for tray icon only; large frames lazy-loaded on demand)
         self.frames = self._load_gif_frames()
         self.large_frame_data = None  # Lazy-loaded as raw RGBA bytes when window is first shown
@@ -247,7 +301,7 @@ class PomodoroTimer:
         self.animation_mode = "normal"  # "normal", "yes", or "no"
         self.start_yes_played = False  # Track if start yes animation has played
         self.temp_icon_path = None
-        
+
         # Sound setup
         self.sounds_dir = Path(__file__).parent / "sounds"
         self._ensure_sounds()
@@ -266,11 +320,15 @@ class PomodoroTimer:
         except Exception:
             pass
 
-        # Config / mute state
+        # Config / persistent state
         self.config_path = Path.home() / ".config" / "tron-pomodoro" / "settings.json"
         _cfg = self._load_config()
         self.muted = _cfg.get("muted", False)
         self.volume = _cfg.get("volume", 0.5)
+        self.session_counter_enabled = _cfg.get("session_counter_enabled", True)
+        self.sessions_completed = _cfg.get("sessions_completed", 0)
+        self.sessions_per_cycle = _cfg.get("sessions_per_cycle", 4)
+        self.task_logging_enabled = _cfg.get("task_logging_enabled", True)
 
         # Create menu items
         self.pause_menu_item = None
@@ -306,19 +364,30 @@ class PomodoroTimer:
 
     def _save_config(self):
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(json.dumps({"muted": self.muted, "volume": self.volume}))
+        self.config_path.write_text(json.dumps({
+            "muted": self.muted,
+            "volume": self.volume,
+            "session_counter_enabled": self.session_counter_enabled,
+            "sessions_completed": self.sessions_completed,
+            "sessions_per_cycle": self.sessions_per_cycle,
+            "task_logging_enabled": self.task_logging_enabled,
+        }))
 
     def set_volume(self, value):
         self.volume = value
         self._save_config()
 
-    def toggle_mute(self, widget=None):
-        self.muted = not self.muted
+    def _apply_mute(self, muted):
+        """Set mute state and sync all UI elements."""
+        self.muted = muted
         self._save_config()
         if self.floating_window:
             self.floating_window.update_mute_button(self.muted)
         if self.mute_menu_item:
             self.mute_menu_item.set_label("Unmute" if self.muted else "Mute")
+
+    def toggle_mute(self, widget=None):
+        self._apply_mute(not self.muted)
 
     def _preload_sounds(self):
         """Load all WAV files into pygame at startup to avoid per-play disk reads."""
@@ -369,7 +438,7 @@ class PomodoroTimer:
                 img.seek(img.tell() + 1)
         except EOFError:
             pass
-    
+
     def _advance_frame(self):
         """Advance animation state by one tick and return the GIF frame index to display."""
         if self.animation_mode == "yes":
@@ -416,14 +485,21 @@ class PomodoroTimer:
             )
             self.floating_window.bit_image.set_from_pixbuf(pixbuf)
 
+        # Toggle blink state every 500 ms (5 × 100 ms ticks)
+        self._blink_tick += 1
+        if self._blink_tick >= 5:
+            self._blink_tick = 0
+            self._blink_state = not self._blink_state
+            self._update_counter_display()
+
         return True  # Continue the GLib timeout
-    
+
     def _format_time(self, seconds):
         """Format seconds as MM:SS."""
         mins = seconds // 60
         secs = seconds % 60
         return f"{mins:02d}:{secs:02d}"
-    
+
     def _timer_countdown(self):
         """Run the timer countdown."""
         while self.remaining_seconds > 0 and self.running:
@@ -433,14 +509,14 @@ class PomodoroTimer:
                     self.animation_mode = "no"
                     self.current_frame = 0  # Reset frame counter
                     self._play_sound("bit_no.wav")
-                
+
                 time.sleep(1)
                 self.remaining_seconds -= 1
                 GLib.idle_add(self._update_display)
-        
+
         if self.running and self.remaining_seconds == 0:
             GLib.idle_add(self._timer_complete)
-    
+
     def _timer_complete(self):
         """Handle timer completion."""
         self.running = False
@@ -449,20 +525,29 @@ class PomodoroTimer:
         self.current_frame = 0  # Reset frame counter
         self._play_sound("bit_yes.wav")
         message = f"{self.session_type} complete!"
-        
+
+        # Track work-type session completion
+        if self._is_countable_session():
+            if self.session_counter_enabled:
+                self.sessions_completed += 1
+                self._save_config()
+                self._update_counter_display()
+            if self.session_type == "Work" and self.task_logging_enabled:
+                self._log_task_entry(self._current_task, self.WORK_DURATION // 60, True)
+
         # Update display
         self._update_display()
-        
+
         # Show notification
         self._show_notification("Pomodoro Timer", message)
-        
+
         # Show floating window if hidden
         if self.floating_window and not self.floating_window.get_visible():
             self.floating_window.present()
-        
+
         # After 3 seconds, switch back to normal
         GLib.timeout_add_seconds(3, self._reset_to_normal)
-    
+
     def _show_notification(self, title, message):
         """Show a desktop notification."""
         if self._notify_module is None:
@@ -472,7 +557,7 @@ class PomodoroTimer:
             notification.show()
         except Exception as e:
             print(f"Notification error: {e}")
-    
+
     def _update_display(self):
         """Update all displays with current timer status."""
         # Update indicator label
@@ -484,13 +569,13 @@ class PomodoroTimer:
             else:
                 label = "Ready"
             self.indicator.set_label(label, "")
-            
+
             # Update menu item sensitivity
             if self.pause_menu_item:
                 self.pause_menu_item.set_sensitive(self.running)
             if self.stop_menu_item:
                 self.stop_menu_item.set_sensitive(self.running)
-        
+
         # Update floating window
         if self.floating_window:
             time_str = self._format_time(self.remaining_seconds) if self.running else "Ready"
@@ -500,30 +585,243 @@ class PomodoroTimer:
                 self.paused,
                 self.running
             )
-    
+            self.floating_window.update_task(self._current_task)
+
+    def _is_countable_session(self):
+        """True for work-type sessions (Work, Custom) — not breaks."""
+        return bool(self.session_type and "Break" not in self.session_type)
+
+    def _update_counter_display(self):
+        """Sync session counter label in the floating window."""
+        if self.floating_window:
+            self.floating_window.update_counter(
+                self.sessions_completed,
+                self.sessions_per_cycle,
+                self.session_counter_enabled,
+                running=self.running and self._is_countable_session(),
+                blink_on=self._blink_state,
+            )
+
     def _reset_to_normal(self):
         """Reset animation to normal mode."""
         self.animation_mode = "normal"
         self.current_frame = 0
         return False  # Don't repeat timeout
-    
+
+    # ── Task logging ────────────────────────────────────────────────────────
+
+    def _prompt_task_name(self):
+        """Show a dialog asking what the user is working on.
+
+        Returns (proceed, task):
+            proceed=False  — user closed the window (X); cancel the session
+            proceed=True   — user clicked Start or Skip; task may be None
+        """
+        dialog = Gtk.Dialog(
+            title="What are you working on?",
+            parent=self.floating_window,
+            modal=True,
+        )
+        dialog.add_buttons("Skip", Gtk.ResponseType.CANCEL, "Start", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_margin_top(10)
+        content.set_margin_bottom(10)
+        content.set_margin_start(10)
+        content.set_margin_end(10)
+
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Task description (optional)")
+        entry.set_activates_default(True)
+        content.pack_start(entry, False, False, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+        text = entry.get_text().strip()
+        dialog.destroy()
+
+        if response == Gtk.ResponseType.OK:
+            return True, text or None
+        elif response == Gtk.ResponseType.CANCEL:
+            return True, None   # Skip — start with no task
+        else:
+            return False, None  # Window closed (DELETE_EVENT) — cancel
+
+    def _log_task_entry(self, task, duration_min, completed):
+        """Append a work session entry to the task log JSON file."""
+        log_path = self.config_path.parent / "task_log.json"
+        try:
+            entries = json.loads(log_path.read_text()) if log_path.exists() else []
+        except Exception:
+            entries = []
+        now = datetime.now()
+        entries.append({
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%H:%M"),
+            "task": task or "",
+            "duration_min": duration_min,
+            "completed": completed,
+        })
+        try:
+            log_path.write_text(json.dumps(entries, indent=2))
+        except Exception as e:
+            print(f"Task log write error: {e}")
+
+    def _open_task_log(self):
+        """Open the task log file with the system default viewer."""
+        log_path = self.config_path.parent / "task_log.json"
+        if not log_path.exists():
+            dialog = Gtk.MessageDialog(
+                parent=self.floating_window,
+                modal=True,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text="No task log yet. Complete a Work session to create one.",
+            )
+            dialog.run()
+            dialog.destroy()
+            return
+        subprocess.Popen(["xdg-open", str(log_path)])
+
+    # ── Settings dialog ──────────────────────────────────────────────────────
+
+    def show_settings_dialog(self, widget=None):
+        """Show the settings dialog."""
+        dialog = Gtk.Dialog(
+            title="Settings",
+            parent=self.floating_window,
+            modal=True,
+        )
+        dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(320, -1)
+
+        content = dialog.get_content_area()
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        content.set_spacing(6)
+
+        def section_label(text):
+            lbl = Gtk.Label()
+            lbl.set_markup(f"<b>{text}</b>")
+            lbl.set_halign(Gtk.Align.START)
+            return lbl
+
+        # ── Audio ────────────────────────────────────────────────────────────
+        content.pack_start(section_label("Audio"), False, False, 0)
+
+        mute_check = Gtk.CheckButton(label="Mute")
+        mute_check.set_active(self.muted)
+        mute_check.connect("toggled", lambda w: self._apply_mute(w.get_active()))
+        content.pack_start(mute_check, False, False, 0)
+
+        vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        vol_box.pack_start(Gtk.Label(label="Volume:"), False, False, 0)
+        vol_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
+        vol_slider.set_value(self.volume)
+        vol_slider.set_draw_value(False)
+        def on_vol_change(s):
+            self.volume = s.get_value()
+            self._save_config()
+            if self.floating_window:
+                self.floating_window.vol_slider.set_value(self.volume)
+        vol_slider.connect("value-changed", on_vol_change)
+        vol_box.pack_start(vol_slider, True, True, 0)
+        content.pack_start(vol_box, False, False, 0)
+
+        content.pack_start(Gtk.Separator(), False, False, 4)
+
+        # ── Session Counter ──────────────────────────────────────────────────
+        content.pack_start(section_label("Session Counter"), False, False, 0)
+
+        counter_check = Gtk.CheckButton(label="Enable session counter")
+        counter_check.set_active(self.session_counter_enabled)
+        def on_counter_toggle(w):
+            self.session_counter_enabled = w.get_active()
+            self._save_config()
+            self._update_counter_display()
+        counter_check.connect("toggled", on_counter_toggle)
+        content.pack_start(counter_check, False, False, 0)
+
+        cycle_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        cycle_box.pack_start(Gtk.Label(label="Sessions per cycle:"), False, False, 0)
+        adj = Gtk.Adjustment(value=self.sessions_per_cycle, lower=1, upper=12, step_increment=1)
+        cycle_spin = Gtk.SpinButton(adjustment=adj)
+        cycle_spin.set_digits(0)
+        def on_cycle_change(s):
+            self.sessions_per_cycle = int(s.get_value())
+            self._save_config()
+            self._update_counter_display()
+        cycle_spin.connect("value-changed", on_cycle_change)
+        cycle_box.pack_start(cycle_spin, False, False, 0)
+        content.pack_start(cycle_box, False, False, 0)
+
+        count_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        count_lbl = Gtk.Label(label=f"Sessions completed: {self.sessions_completed}")
+        count_lbl.set_halign(Gtk.Align.START)
+        count_row.pack_start(count_lbl, True, True, 0)
+        reset_btn = Gtk.Button(label="Reset")
+        def on_reset(_w):
+            self.sessions_completed = 0
+            self._save_config()
+            self._update_counter_display()
+            count_lbl.set_text(f"Sessions completed: {self.sessions_completed}")
+        reset_btn.connect("clicked", on_reset)
+        count_row.pack_start(reset_btn, False, False, 0)
+        content.pack_start(count_row, False, False, 0)
+
+        content.pack_start(Gtk.Separator(), False, False, 4)
+
+        # ── Task Logging ─────────────────────────────────────────────────────
+        content.pack_start(section_label("Task Logging"), False, False, 0)
+
+        log_check = Gtk.CheckButton(label="Enable task logging (prompts before Work sessions)")
+        log_check.set_active(self.task_logging_enabled)
+        def on_log_toggle(w):
+            self.task_logging_enabled = w.get_active()
+            self._save_config()
+        log_check.connect("toggled", on_log_toggle)
+        content.pack_start(log_check, False, False, 0)
+
+        view_log_btn = Gtk.Button(label="View Log...")
+        view_log_btn.connect("clicked", lambda w: self._open_task_log())
+        content.pack_start(view_log_btn, False, False, 0)
+
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    # ── Timer control ────────────────────────────────────────────────────────
+
     def show_window(self, widget=None):
         """Show the floating window."""
         if self.floating_window:
             self.floating_window.present()
-    
+
     def start_work(self, widget=None):
-        """Start a work session."""
+        """Start a work session, optionally prompting for a task name."""
+        if self.task_logging_enabled:
+            proceed, task = self._prompt_task_name()
+            if not proceed:
+                return
+        else:
+            task = None
         self._start_timer(self.WORK_DURATION, "Work")
-    
+        # Set task AFTER _start_timer; stop_timer() inside it would clear it otherwise
+        self._current_task = task
+        if self.floating_window:
+            self.floating_window.update_task(self._current_task)
+
     def start_short_break(self, widget=None):
         """Start a short break."""
         self._start_timer(self.SHORT_BREAK, "Break")
-    
+
     def start_long_break(self, widget=None):
         """Start a long break."""
         self._start_timer(self.LONG_BREAK, "Long Break")
-    
+
     def start_custom_timer(self, widget=None):
         """Show dialog to start a custom timer."""
         dialog = Gtk.Dialog(
@@ -535,34 +833,45 @@ class PomodoroTimer:
             "Cancel", Gtk.ResponseType.CANCEL,
             "OK", Gtk.ResponseType.OK
         )
-        
+
         content = dialog.get_content_area()
         content.set_margin_top(10)
         content.set_margin_bottom(10)
         content.set_margin_start(10)
         content.set_margin_end(10)
-        
+
         # Minutes input
         hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         label = Gtk.Label(label="Minutes:")
         hbox.pack_start(label, False, False, 0)
-        
+
         adjustment = Gtk.Adjustment(value=25, lower=1, upper=180, step_increment=1)
         spinbutton = Gtk.SpinButton(adjustment=adjustment)
         spinbutton.set_digits(0)
         hbox.pack_start(spinbutton, True, True, 0)
-        
+
         content.pack_start(hbox, False, False, 0)
-        
+
         dialog.show_all()
         response = dialog.run()
-        
+
         if response == Gtk.ResponseType.OK:
             minutes = int(spinbutton.get_value())
+            dialog.destroy()
+            if self.task_logging_enabled:
+                proceed, task = self._prompt_task_name()
+                if not proceed:
+                    return
+            else:
+                task = None
             self._start_timer(minutes * 60, f"Custom ({minutes}m)")
-        
-        dialog.destroy()
-    
+            # Set task AFTER _start_timer; stop_timer() inside it would clear it otherwise
+            self._current_task = task
+            if self.floating_window:
+                self.floating_window.update_task(self._current_task)
+        else:
+            dialog.destroy()
+
     def _start_timer(self, duration, session_type):
         """Start a timer with the given duration."""
         self.stop_timer()
@@ -574,17 +883,17 @@ class PomodoroTimer:
         self.start_yes_played = False  # Reset flag so yes plays once then switches to normal
         self.current_frame = 0  # Reset frame counter
         self._update_display()
-        
+
         self._play_sound("bit_start.wav")
         self.timer_thread = threading.Thread(target=self._timer_countdown, daemon=True)
         self.timer_thread.start()
-    
+
     def toggle_pause(self, widget=None):
         """Toggle pause state."""
         if self.running:
             self.paused = not self.paused
             self._update_display()
-    
+
     def stop_timer(self, widget=None):
         """Stop the current timer."""
         self.running = False
@@ -592,65 +901,74 @@ class PomodoroTimer:
         self.remaining_seconds = 0
         self.animation_mode = "normal"  # Reset to normal when stopped
         self.current_frame = 0  # Reset frame counter
+        self._current_task = None
         self._update_display()
+        self._update_counter_display()
         if self.timer_thread:
             self.timer_thread.join(timeout=1)
-    
+
     def quit_app(self, widget=None):
         """Quit the application."""
         self.stop_timer()
         Gtk.main_quit()
-    
+
     def build_menu(self):
         """Build the indicator menu."""
         menu = Gtk.Menu()
-        
+
         # Show window
         item_show = Gtk.MenuItem(label="Show Timer Window")
         item_show.connect('activate', self.show_window)
         menu.append(item_show)
-        
+
         menu.append(Gtk.SeparatorMenuItem())
-        
+
         # Work session
         item_work = Gtk.MenuItem(label="Start Work (25 min)")
         item_work.connect('activate', self.start_work)
         menu.append(item_work)
-        
+
         # Short break
         item_short_break = Gtk.MenuItem(label="Start Short Break (5 min)")
         item_short_break.connect('activate', self.start_short_break)
         menu.append(item_short_break)
-        
+
         # Long break
         item_long_break = Gtk.MenuItem(label="Start Long Break (15 min)")
         item_long_break.connect('activate', self.start_long_break)
         menu.append(item_long_break)
-        
+
         # Custom timer
         item_custom = Gtk.MenuItem(label="Custom Timer...")
         item_custom.connect('activate', self.start_custom_timer)
         menu.append(item_custom)
-        
+
         # Separator
         menu.append(Gtk.SeparatorMenuItem())
-        
+
         # Pause/Resume
         self.pause_menu_item = Gtk.MenuItem(label="Pause/Resume")
         self.pause_menu_item.connect('activate', self.toggle_pause)
         self.pause_menu_item.set_sensitive(False)
         menu.append(self.pause_menu_item)
-        
+
         # Stop
         self.stop_menu_item = Gtk.MenuItem(label="Stop Timer")
         self.stop_menu_item.connect('activate', self.stop_timer)
         self.stop_menu_item.set_sensitive(False)
         menu.append(self.stop_menu_item)
-        
+
+        menu.append(Gtk.SeparatorMenuItem())
+
         # Mute
         self.mute_menu_item = Gtk.MenuItem(label="Unmute" if self.muted else "Mute")
         self.mute_menu_item.connect('activate', self.toggle_mute)
         menu.append(self.mute_menu_item)
+
+        # Settings
+        item_settings = Gtk.MenuItem(label="Settings...")
+        item_settings.connect('activate', self.show_settings_dialog)
+        menu.append(item_settings)
 
         # Separator
         menu.append(Gtk.SeparatorMenuItem())
@@ -659,20 +977,20 @@ class PomodoroTimer:
         item_quit = Gtk.MenuItem(label="Quit")
         item_quit.connect('activate', self.quit_app)
         menu.append(item_quit)
-        
+
         menu.show_all()
         return menu
-    
+
     def run(self):
         """Run the system tray application."""
         if USE_APPINDICATOR:
             # Create temp file for icon
             temp_dir = tempfile.gettempdir()
             self.temp_icon_path = Path(temp_dir) / "tron_bit_icon.png"
-            
+
             # Save first frame
             self.frames[self.NORMAL_FRAMES[0]].save(self.temp_icon_path, 'PNG')
-            
+
             # Create AppIndicator
             self.indicator = AppIndicator3.Indicator.new(
                 "tron-pomodoro",
@@ -681,17 +999,25 @@ class PomodoroTimer:
             )
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
             self.indicator.set_label("Ready", "")
-            
+
             # Create floating window
             self.floating_window = FloatingWindow(self)
             self.floating_window.update_mute_button(self.muted)
+            self._update_counter_display()
+
+            # Set window icon from first bit frame
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(self.icon_path))
+                self.floating_window.set_icon(pixbuf)
+            except Exception:
+                pass
 
             # Set menu
             self.indicator.set_menu(self.build_menu())
-            
+
             # Start animation
             GLib.timeout_add(100, self._update_icon)
-            
+
             # Run GTK main loop
             Gtk.main()
         else:
@@ -705,7 +1031,7 @@ def main():
     if not icon_path.exists():
         print(f"Error: bit.gif not found at {icon_path}")
         return
-    
+
     timer = PomodoroTimer(icon_path)
     timer.run()
 
