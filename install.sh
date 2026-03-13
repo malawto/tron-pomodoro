@@ -31,14 +31,21 @@ fi
 
 mkdir -p "$AUTOSTART_DIR"
 
-sed \
+DESKTOP_CONTENT="$(sed \
     -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
     -e "s|{{ICON_FILE}}|$ICON_FILE|g" \
-    "$TEMPLATE" > "$OUTPUT"
+    "$TEMPLATE")"
 
+echo "$DESKTOP_CONTENT" > "$OUTPUT"
 chmod +x "$OUTPUT"
 
+# Also install to applications dir so GNOME Shell associates windows with our icon
+APPLICATIONS_DIR="$HOME/.local/share/applications"
+mkdir -p "$APPLICATIONS_DIR"
+echo "$DESKTOP_CONTENT" > "$APPLICATIONS_DIR/tron-pomodoro.desktop"
+
 echo "Installed autostart entry to: $OUTPUT"
+echo "Installed application entry to: $APPLICATIONS_DIR/tron-pomodoro.desktop"
 echo ""
 echo "Contents:"
 echo "---"

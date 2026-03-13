@@ -40,6 +40,10 @@ class FloatingWindow(Gtk.Window):
         self.set_keep_above(True)  # Always on top
         self.set_resizable(False)
         self.set_default_size(200, 280)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+        self.set_wmclass("tron-pomodoro", "tron-pomodoro")
 
         # Make window draggable
         self.connect("button-press-event", self.on_button_press)
@@ -86,17 +90,17 @@ class FloatingWindow(Gtk.Window):
         # Buttons
         button_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
 
-        btn_work = Gtk.Button(label="Work (25 min)")
-        btn_work.connect("clicked", lambda w: timer.start_work())
-        button_box.pack_start(btn_work, False, False, 0)
+        self.btn_work = Gtk.Button()
+        self.btn_work.connect("clicked", lambda w: timer.start_work())
+        button_box.pack_start(self.btn_work, False, False, 0)
 
-        btn_short = Gtk.Button(label="Short Break (5 min)")
-        btn_short.connect("clicked", lambda w: timer.start_short_break())
-        button_box.pack_start(btn_short, False, False, 0)
+        self.btn_short = Gtk.Button()
+        self.btn_short.connect("clicked", lambda w: timer.start_short_break())
+        button_box.pack_start(self.btn_short, False, False, 0)
 
-        btn_long = Gtk.Button(label="Long Break (15 min)")
-        btn_long.connect("clicked", lambda w: timer.start_long_break())
-        button_box.pack_start(btn_long, False, False, 0)
+        self.btn_long = Gtk.Button()
+        self.btn_long.connect("clicked", lambda w: timer.start_long_break())
+        button_box.pack_start(self.btn_long, False, False, 0)
 
         btn_custom = Gtk.Button(label="Custom Timer...")
         btn_custom.connect("clicked", lambda w: timer.start_custom_timer())
@@ -237,6 +241,11 @@ class FloatingWindow(Gtk.Window):
     def update_mute_button(self, muted):
         self.btn_mute.set_label("Unmute" if muted else "Mute")
 
+    def update_button_labels(self, work_min, short_min, long_min):
+        self.btn_work.set_label(f"Work ({work_min} min)")
+        self.btn_short.set_label(f"Short Break ({short_min} min)")
+        self.btn_long.set_label(f"Long Break ({long_min} min)")
+
     def update_task(self, task):
         """Show or hide the current task description."""
         if task:
@@ -284,10 +293,7 @@ class PomodoroTimer:
         self._blink_state = False   # toggled every 500 ms for in-progress dot
         self._blink_tick = 0
 
-        # Timer durations in seconds
-        self.WORK_DURATION = 25 * 60
-        self.SHORT_BREAK = 5 * 60
-        self.LONG_BREAK = 15 * 60
+        # Timer durations in seconds (derived from config after loading below)
 
         # Animation frame ranges
         self.NORMAL_FRAMES = list(range(0, 9)) + list(range(20, 33))  # Idle rotation
@@ -329,6 +335,10 @@ class PomodoroTimer:
         self.sessions_completed = _cfg.get("sessions_completed", 0)
         self.sessions_per_cycle = _cfg.get("sessions_per_cycle", 4)
         self.task_logging_enabled = _cfg.get("task_logging_enabled", True)
+        self.work_duration_min = _cfg.get("work_duration_min", 25)
+        self.short_break_min = _cfg.get("short_break_min", 5)
+        self.long_break_min = _cfg.get("long_break_min", 15)
+        self._update_durations()
 
         # Create menu items
         self.pause_menu_item = None
@@ -356,6 +366,21 @@ class PomodoroTimer:
         except Exception as e:
             print(f"Sound generation failed: {e}")
 
+    def _update_durations(self):
+        """Recompute second-based duration constants from config minute values."""
+        self.WORK_DURATION = self.work_duration_min * 60
+        self.SHORT_BREAK = self.short_break_min * 60
+        self.LONG_BREAK = self.long_break_min * 60
+
+    def _init_dialog(self, dialog):
+        """Apply common dialog setup: bit icon + suppress taskbar/pager entry."""
+        dialog.set_skip_taskbar_hint(True)
+        dialog.set_skip_pager_hint(True)
+        if self.floating_window:
+            dialog.set_transient_for(self.floating_window)
+        if getattr(self, '_app_pixbuf', None):
+            dialog.set_icon(self._app_pixbuf)
+
     def _load_config(self):
         try:
             return json.loads(self.config_path.read_text())
@@ -371,6 +396,9 @@ class PomodoroTimer:
             "sessions_completed": self.sessions_completed,
             "sessions_per_cycle": self.sessions_per_cycle,
             "task_logging_enabled": self.task_logging_enabled,
+            "work_duration_min": self.work_duration_min,
+            "short_break_min": self.short_break_min,
+            "long_break_min": self.long_break_min,
         }))
 
     def set_volume(self, value):
@@ -527,11 +555,14 @@ class PomodoroTimer:
         message = f"{self.session_type} complete!"
 
         # Track work-type session completion
+        cycle_complete = False
         if self._is_countable_session():
             if self.session_counter_enabled:
                 self.sessions_completed += 1
                 self._save_config()
                 self._update_counter_display()
+                if self.sessions_completed % self.sessions_per_cycle == 0:
+                    cycle_complete = True
             if self.session_type == "Work" and self.task_logging_enabled:
                 self._log_task_entry(self._current_task, self.WORK_DURATION // 60, True)
 
@@ -545,8 +576,10 @@ class PomodoroTimer:
         if self.floating_window and not self.floating_window.get_visible():
             self.floating_window.present()
 
-        # After 3 seconds, switch back to normal
+        # After 3 seconds, switch back to normal (and suggest long break if cycle done)
         GLib.timeout_add_seconds(3, self._reset_to_normal)
+        if cycle_complete:
+            GLib.timeout_add_seconds(3, self._suggest_long_break)
 
     def _show_notification(self, title, message):
         """Show a desktop notification."""
@@ -608,6 +641,48 @@ class PomodoroTimer:
         self.current_frame = 0
         return False  # Don't repeat timeout
 
+    def _suggest_long_break(self):
+        """Show a dialog suggesting a long break after a full cycle."""
+        cycles = self.sessions_completed // self.sessions_per_cycle
+        dialog = Gtk.Dialog(
+            title="Cycle Complete!",
+            parent=self.floating_window,
+            modal=True,
+        )
+        self._init_dialog(dialog)
+        dialog.add_buttons(
+            f"Long Break ({self.long_break_min} min)", Gtk.ResponseType.ACCEPT,
+            f"Short Break ({self.short_break_min} min)", Gtk.ResponseType.REJECT,
+            "Skip", Gtk.ResponseType.CANCEL,
+        )
+
+        content = dialog.get_content_area()
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+
+        lbl = Gtk.Label()
+        cycle_word = "cycle" if cycles == 1 else "cycles"
+        lbl.set_markup(
+            f"<b>You've completed {self.sessions_per_cycle} sessions "
+            f"({cycles} {cycle_word} total).</b>\n\nTime for a long break?"
+        )
+        lbl.set_line_wrap(True)
+        lbl.set_max_width_chars(40)
+        content.pack_start(lbl, False, False, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+
+        if response == Gtk.ResponseType.ACCEPT:
+            self.start_long_break()
+        elif response == Gtk.ResponseType.REJECT:
+            self.start_short_break()
+
+        return False  # Don't repeat timeout
+
     # ── Task logging ────────────────────────────────────────────────────────
 
     def _prompt_task_name(self):
@@ -622,6 +697,7 @@ class PomodoroTimer:
             parent=self.floating_window,
             modal=True,
         )
+        self._init_dialog(dialog)
         dialog.add_buttons("Skip", Gtk.ResponseType.CANCEL, "Start", Gtk.ResponseType.OK)
         dialog.set_default_response(Gtk.ResponseType.OK)
 
@@ -679,6 +755,7 @@ class PomodoroTimer:
                 buttons=Gtk.ButtonsType.OK,
                 text="No task log yet. Complete a Work session to create one.",
             )
+            self._init_dialog(dialog)
             dialog.run()
             dialog.destroy()
             return
@@ -695,6 +772,7 @@ class PomodoroTimer:
         )
         dialog.add_buttons("Close", Gtk.ResponseType.CLOSE)
         dialog.set_default_size(320, -1)
+        self._init_dialog(dialog)
 
         content = dialog.get_content_area()
         content.set_margin_top(12)
@@ -708,30 +786,6 @@ class PomodoroTimer:
             lbl.set_markup(f"<b>{text}</b>")
             lbl.set_halign(Gtk.Align.START)
             return lbl
-
-        # ── Audio ────────────────────────────────────────────────────────────
-        content.pack_start(section_label("Audio"), False, False, 0)
-
-        mute_check = Gtk.CheckButton(label="Mute")
-        mute_check.set_active(self.muted)
-        mute_check.connect("toggled", lambda w: self._apply_mute(w.get_active()))
-        content.pack_start(mute_check, False, False, 0)
-
-        vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        vol_box.pack_start(Gtk.Label(label="Volume:"), False, False, 0)
-        vol_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
-        vol_slider.set_value(self.volume)
-        vol_slider.set_draw_value(False)
-        def on_vol_change(s):
-            self.volume = s.get_value()
-            self._save_config()
-            if self.floating_window:
-                self.floating_window.vol_slider.set_value(self.volume)
-        vol_slider.connect("value-changed", on_vol_change)
-        vol_box.pack_start(vol_slider, True, True, 0)
-        content.pack_start(vol_box, False, False, 0)
-
-        content.pack_start(Gtk.Separator(), False, False, 4)
 
         # ── Session Counter ──────────────────────────────────────────────────
         content.pack_start(section_label("Session Counter"), False, False, 0)
@@ -772,7 +826,61 @@ class PomodoroTimer:
         count_row.pack_start(reset_btn, False, False, 0)
         content.pack_start(count_row, False, False, 0)
 
-        content.pack_start(Gtk.Separator(), False, False, 4)
+        content.pack_start(Gtk.Separator(), False, False, 8)
+
+        # ── Timers ───────────────────────────────────────────────────────────
+        content.pack_start(section_label("Timers"), False, False, 0)
+
+        def duration_row(label_text, current_min, lower, upper, on_change):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            lbl = Gtk.Label(label=label_text)
+            lbl.set_width_chars(16)
+            lbl.set_halign(Gtk.Align.START)
+            row.pack_start(lbl, False, False, 0)
+            adj = Gtk.Adjustment(value=current_min, lower=lower, upper=upper, step_increment=1)
+            spin = Gtk.SpinButton(adjustment=adj)
+            spin.set_digits(0)
+            spin.set_width_chars(4)
+            spin.connect("value-changed", on_change)
+            row.pack_start(spin, False, False, 0)
+            row.pack_start(Gtk.Label(label="min"), False, False, 0)
+            return row
+
+        def on_work_change(s):
+            self.work_duration_min = int(s.get_value())
+            self._update_durations()
+            self._save_config()
+            if self.floating_window:
+                self.floating_window.update_button_labels(
+                    self.work_duration_min, self.short_break_min, self.long_break_min)
+
+        def on_short_change(s):
+            self.short_break_min = int(s.get_value())
+            self._update_durations()
+            self._save_config()
+            if self.floating_window:
+                self.floating_window.update_button_labels(
+                    self.work_duration_min, self.short_break_min, self.long_break_min)
+
+        def on_long_change(s):
+            self.long_break_min = int(s.get_value())
+            self._update_durations()
+            self._save_config()
+            if self.floating_window:
+                self.floating_window.update_button_labels(
+                    self.work_duration_min, self.short_break_min, self.long_break_min)
+
+        content.pack_start(
+            duration_row("Work session:", self.work_duration_min, 1, 120, on_work_change),
+            False, False, 0)
+        content.pack_start(
+            duration_row("Short break:", self.short_break_min, 1, 60, on_short_change),
+            False, False, 0)
+        content.pack_start(
+            duration_row("Long break:", self.long_break_min, 1, 120, on_long_change),
+            False, False, 0)
+
+        content.pack_start(Gtk.Separator(), False, False, 8)
 
         # ── Task Logging ─────────────────────────────────────────────────────
         content.pack_start(section_label("Task Logging"), False, False, 0)
@@ -788,6 +896,30 @@ class PomodoroTimer:
         view_log_btn = Gtk.Button(label="View Log...")
         view_log_btn.connect("clicked", lambda w: self._open_task_log())
         content.pack_start(view_log_btn, False, False, 0)
+
+        content.pack_start(Gtk.Separator(), False, False, 8)
+
+        # ── Audio ────────────────────────────────────────────────────────────
+        content.pack_start(section_label("Audio"), False, False, 0)
+
+        mute_check = Gtk.CheckButton(label="Mute")
+        mute_check.set_active(self.muted)
+        mute_check.connect("toggled", lambda w: self._apply_mute(w.get_active()))
+        content.pack_start(mute_check, False, False, 0)
+
+        vol_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        vol_box.pack_start(Gtk.Label(label="Volume:"), False, False, 0)
+        vol_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.05)
+        vol_slider.set_value(self.volume)
+        vol_slider.set_draw_value(False)
+        def on_vol_change(s):
+            self.volume = s.get_value()
+            self._save_config()
+            if self.floating_window:
+                self.floating_window.vol_slider.set_value(self.volume)
+        vol_slider.connect("value-changed", on_vol_change)
+        vol_box.pack_start(vol_slider, True, True, 0)
+        content.pack_start(vol_box, False, False, 0)
 
         dialog.show_all()
         dialog.run()
@@ -829,6 +961,7 @@ class PomodoroTimer:
             parent=self.floating_window if self.floating_window else None,
             modal=True
         )
+        self._init_dialog(dialog)
         dialog.add_buttons(
             "Cancel", Gtk.ResponseType.CANCEL,
             "OK", Gtk.ResponseType.OK
@@ -1003,14 +1136,16 @@ class PomodoroTimer:
             # Create floating window
             self.floating_window = FloatingWindow(self)
             self.floating_window.update_mute_button(self.muted)
+            self.floating_window.update_button_labels(
+                self.work_duration_min, self.short_break_min, self.long_break_min)
             self._update_counter_display()
 
-            # Set window icon from first bit frame
+            # Load pixbuf and set as default icon for every window in this process
             try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(self.icon_path))
-                self.floating_window.set_icon(pixbuf)
+                self._app_pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(self.temp_icon_path))
+                Gtk.Window.set_default_icon(self._app_pixbuf)
             except Exception:
-                pass
+                self._app_pixbuf = None
 
             # Set menu
             self.indicator.set_menu(self.build_menu())
@@ -1026,6 +1161,9 @@ class PomodoroTimer:
 
 
 def main():
+    GLib.set_prgname("tron-pomodoro")
+    GLib.set_application_name("Tron Pomodoro")
+
     icon_path = Path(__file__).parent / "bit.gif"
 
     if not icon_path.exists():

@@ -7,4 +7,5 @@ Icon={{INSTALL_DIR}}/{{ICON_FILE}}
 Terminal=false
 Categories=Utility;
 StartupNotify=false
+StartupWMClass=tron-pomodoro
 X-GNOME-Autostart-enabled=true
