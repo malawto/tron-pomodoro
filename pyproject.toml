@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tron-pomodoro"
-version = "1.0.0"
+version = "1.1.0"
 description = "Tron Bit Pomodoro Timer — animated system tray Pomodoro timer for Linux/GNOME"
 requires-python = ">=3.9"
 # python3-gi (PyGObject) is a system package — install via apt before using pipx.

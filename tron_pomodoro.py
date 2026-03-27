@@ -17,6 +17,12 @@ from pathlib import Path
 from PIL import Image
 
 try:
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("tron-pomodoro")
+except Exception:
+    __version__ = "1.1.0"
+
+try:
     import gi
     gi.require_version('Gtk', '3.0')
     gi.require_version('AppIndicator3', '0.1')
@@ -968,6 +974,13 @@ class PomodoroTimer:
         vol_slider.connect("value-changed", on_vol_change)
         vol_box.pack_start(vol_slider, True, True, 0)
         content.pack_start(vol_box, False, False, 0)
+
+        content.pack_start(Gtk.Separator(), False, False, 8)
+
+        ver_lbl = Gtk.Label()
+        ver_lbl.set_markup(f"<span font='9' alpha='60%'>v{__version__}</span>")
+        ver_lbl.set_halign(Gtk.Align.END)
+        content.pack_start(ver_lbl, False, False, 0)
 
         dialog.show_all()
         dialog.run()
