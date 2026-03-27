@@ -21,7 +21,8 @@ try:
     gi.require_version('Gtk', '3.0')
     gi.require_version('AppIndicator3', '0.1')
     gi.require_version('GdkPixbuf', '2.0')
-    from gi.repository import Gtk, AppIndicator3, GLib, Gdk, GdkPixbuf
+    gi.require_version('Gio', '2.0')
+    from gi.repository import Gtk, AppIndicator3, GLib, Gdk, GdkPixbuf, Gio
     USE_APPINDICATOR = True
 except (ImportError, ValueError):
     USE_APPINDICATOR = False
@@ -307,6 +308,8 @@ class PomodoroTimer:
         self._last_session_was_break = False  # drives "start next" label
         self._blink_state = False   # toggled every 500 ms for in-progress dot
         self._blink_tick = 0
+        self._suspended = False       # True while machine is suspended
+        self._paused_for_suspend = False  # True if we auto-paused on suspend
 
         # Timer durations in seconds (derived from config after loading below)
 
@@ -509,6 +512,11 @@ class PomodoroTimer:
 
     def _update_icon(self):
         """Update the system tray icon and floating window with the next frame."""
+        # Skip all GTK work while the machine is suspended to avoid hammering
+        # invalid widgets after a resume (causes gtk_widget_get_scale_factor warnings).
+        if self._suspended:
+            return True
+
         actual_frame = self._advance_frame()
 
         if USE_APPINDICATOR and self.indicator and self.temp_icon_path:
@@ -519,8 +527,12 @@ class PomodoroTimer:
             self.indicator.set_property("icon-theme-path", str(self.temp_icon_path.parent))
             self.indicator.set_property("icon-name", icon_name)
 
-        # Update floating window if visible — build Pixbuf directly from raw bytes (no disk I/O)
-        if self.floating_window and self.floating_window.get_visible():
+        # Update floating window if visible and realized (guards against invalid GDK
+        # windows after Wayland compositor reset on resume-from-suspend).
+        if (self.floating_window
+                and self.floating_window.get_visible()
+                and self.floating_window.get_realized()
+                and self.floating_window.bit_image.get_realized()):
             self._ensure_large_frames()
             raw, w, h = self.large_frame_data[actual_frame]
             gbytes = GLib.Bytes.new(raw)
@@ -1165,6 +1177,48 @@ class PomodoroTimer:
         menu.show_all()
         return menu
 
+    def _setup_sleep_monitor(self):
+        """Subscribe to systemd-logind PrepareForSleep so we can pause on suspend
+        and safely resume on wake, avoiding GTK widget errors after the Wayland
+        compositor resets."""
+        try:
+            conn = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            conn.signal_subscribe(
+                'org.freedesktop.login1',
+                'org.freedesktop.login1.Manager',
+                'PrepareForSleep',
+                '/org/freedesktop/login1',
+                None,
+                Gio.DBusSignalFlags.NONE,
+                self._on_prepare_for_sleep,
+                None,
+            )
+        except Exception as e:
+            print(f"Sleep monitor setup failed (suspend/resume handling disabled): {e}")
+
+    def _on_prepare_for_sleep(self, conn, sender, obj_path, iface, signal, params, user_data):
+        """Called by D-Bus just before suspend (before=True) and just after resume (before=False)."""
+        before = params.unpack()[0]
+        if before:
+            # Going to sleep: set flag so _update_icon becomes a no-op.
+            self._suspended = True
+            # Auto-pause a running timer so time doesn't drain overnight.
+            if self.running and not self.paused:
+                self.paused = True
+                self._paused_for_suspend = True
+        else:
+            # Waking up: clear the flag so updates resume normally.
+            self._suspended = False
+            # Reinitialise pygame mixer — PulseAudio/PipeWire connection is dead after suspend.
+            try:
+                import pygame
+                pygame.mixer.quit()
+                pygame.mixer.init()
+                self._sound_cache = self._preload_sounds()
+            except Exception:
+                pass
+            GLib.idle_add(self._update_display)
+
     def run(self):
         """Run the system tray application."""
         if USE_APPINDICATOR:
@@ -1200,6 +1254,9 @@ class PomodoroTimer:
 
             # Set menu
             self.indicator.set_menu(self.build_menu())
+
+            # Subscribe to suspend/resume signals before entering the main loop
+            self._setup_sleep_monitor()
 
             # Start animation
             GLib.timeout_add(100, self._update_icon)
